@@ -159,7 +159,7 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--pml", help="Procmon PML boot log file")
     group.add_argument("--csv", help="Procmon CSV export file")
-    parser.add_argument("--output", help="Output JSON file (default: stdout)")
+    parser.add_argument("--output", default="boot_results.json", help="Output JSON file (default: boot_results.json)")
 
     args = parser.parse_args()
 
@@ -190,12 +190,13 @@ def main():
 
     output = json.dumps(report, indent=2)
 
-    if args.output:
-        with open(args.output, "w") as f:
-            f.write(output)
-        print(f"Report written to: {args.output}", file=sys.stderr)
-    else:
-        print(output)
+    # Always print to screen
+    print(output)
+
+    # Always save to file
+    with open(args.output, "w") as f:
+        f.write(output)
+    print(f"\nReport written to: {args.output}", file=sys.stderr)
 
 
 if __name__ == "__main__":
