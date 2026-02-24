@@ -197,13 +197,64 @@ def main():
 
     output = json.dumps(report, indent=2)
 
-    # Always print to screen
-    print(output)
-
-    # Always save to file
+    # Save full JSON
     with open(args.output, "w") as f:
         f.write(output)
-    print(f"\nReport written to: {args.output}", file=sys.stderr)
+
+    # Print human-readable summary
+    drivers = report["drivers"]
+    candidates = [d for d in drivers if d["boot_blind_spot_candidate"]]
+    boot_start = [d for d in drivers if d["start_type"] == 0]
+    system_start = [d for d in drivers if d["start_type"] == 1]
+
+    print()
+    print("=" * 60)
+    print("  Cthaeh Boot Analyzer Results")
+    print("=" * 60)
+    print(f"  Source:    {args.pml or args.csv}")
+    print(f"  Drivers:   {len(drivers)} total, {len(candidates)} blind spot candidates")
+    print(f"  Boot type: {len(boot_start)} BOOT_START, {len(system_start)} SYSTEM_START")
+    print()
+
+    if candidates:
+        print("  BLIND SPOT CANDIDATES (highest risk)")
+        print("  " + "-" * 56)
+        for i, d in enumerate(sorted(candidates, key=lambda x: -x["name_not_found_count"]), 1):
+            phase = d["boot_phase"]
+            print(f"  {i:>3}. {d['driver']:<30} {phase:<14} {d['name_not_found_count']:>4} hits")
+        print()
+
+    if boot_start:
+        print("  BOOT_START DRIVERS (load before EDR)")
+        print("  " + "-" * 56)
+        for d in sorted(boot_start, key=lambda x: -x["name_not_found_count"]):
+            flag = " ***" if d["boot_blind_spot_candidate"] else ""
+            print(f"    {d['driver']:<30} {d['name_not_found_count']:>4} hits{flag}")
+        print()
+
+    if system_start:
+        print("  SYSTEM_START DRIVERS")
+        print("  " + "-" * 56)
+        for d in sorted(system_start, key=lambda x: -x["name_not_found_count"])[:15]:
+            flag = " ***" if d["boot_blind_spot_candidate"] else ""
+            print(f"    {d['driver']:<30} {d['name_not_found_count']:>4} hits{flag}")
+        if len(system_start) > 15:
+            print(f"    ... and {len(system_start) - 15} more")
+        print()
+
+    # Top 10 overall by hit count
+    top10 = sorted(drivers, key=lambda x: -x["name_not_found_count"])[:10]
+    print("  TOP 10 BY HIT COUNT")
+    print("  " + "-" * 56)
+    for i, d in enumerate(top10, 1):
+        phase = d["boot_phase"]
+        flag = " ***" if d["boot_blind_spot_candidate"] else ""
+        print(f"  {i:>3}. {d['driver']:<30} {phase:<14} {d['name_not_found_count']:>4} hits{flag}")
+    print()
+
+    print(f"  *** = blind spot candidate")
+    print(f"  Full report: {args.output}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
