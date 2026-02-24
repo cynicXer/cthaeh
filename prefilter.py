@@ -18,6 +18,15 @@ import time
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Boot-phase awareness (Jiří Vinopal's EDR Phase 0 blind spots research)
+# Boot-start drivers (Start=0) load before ANY EDR kernel callbacks.
+# System-start drivers (Start=1) load before most EDR user-mode components.
+try:
+    import winreg
+    HAS_WINREG = True
+except ImportError:
+    HAS_WINREG = False
+
 try:
     import pefile
 except ImportError:
@@ -93,6 +102,70 @@ def load_holygrail_loldrivers():
     except Exception:
         pass
     return hashes
+
+
+# --- Boot Phase Awareness ---
+# Reference: Jiří Vinopal's research on EDR Phase 0 blind spots.
+# During boot Phase 0/1, only the SYSTEM hive is loaded. Drivers accessing
+# HKLM\SOFTWARE get NAME NOT FOUND, revealing they operate in an unmonitored window.
+
+BOOT_PHASE_NAMES = {
+    0: "BOOT_START",
+    1: "SYSTEM_START",
+    2: "AUTO_START",
+    3: "MANUAL",
+    4: "DISABLED",
+}
+
+BOOT_PHASE_BONUS = {
+    0: 15,  # Phase 0: EDR completely blind — no callbacks, no hooks, no telemetry
+    1: 10,  # Phase 1: EDR kernel loading but user-mode agent not ready
+}
+
+BOOT_LOG_BLIND_SPOT_BONUS = 5  # Confirmed SOFTWARE hive access during boot
+
+
+def get_driver_start_type(driver_path):
+    """Look up driver start type from Windows registry.
+
+    Uses the driver filename (minus extension) to query:
+    HKLM\\SYSTEM\\CurrentControlSet\\Services\\{name}\\Start
+
+    Returns: (start_type: int or None, phase_name: str)
+    """
+    if not HAS_WINREG:
+        return None, "UNKNOWN"
+
+    svc_name = os.path.splitext(os.path.basename(driver_path))[0]
+
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            f"SYSTEM\\CurrentControlSet\\Services\\{svc_name}"
+        )
+        start_val, _ = winreg.QueryValueEx(key, "Start")
+        winreg.CloseKey(key)
+        return start_val, BOOT_PHASE_NAMES.get(start_val, f"UNKNOWN({start_val})")
+    except Exception:
+        return None, "UNKNOWN"
+
+
+def load_boot_log(boot_log_path):
+    """Load boot_analyzer.py JSON output for cross-reference.
+
+    Returns: dict of driver_name_lower -> boot log entry
+    """
+    if not boot_log_path or not os.path.exists(boot_log_path):
+        return {}
+    try:
+        with open(boot_log_path, "r") as f:
+            data = json.load(f)
+        return {
+            entry["driver"].lower(): entry
+            for entry in data.get("drivers", [])
+        }
+    except Exception:
+        return {}
 
 
 # Imports that indicate interesting attack surface
@@ -547,10 +620,19 @@ def check_driver(driver_path, max_size=MAX_SIZE_BYTES, lol_hashes=None, lol_name
         flags.append("FIRMWARE_ACCESS")
         high_risk_count += 2
 
+    # --- Boot phase scoring ---
+    # Drivers that load early in boot operate before EDR can install hooks.
+    # Ref: Jiří Vinopal EDR Phase 0 blind spots
+    start_type, boot_phase = get_driver_start_type(driver_path)
+    boot_bonus = BOOT_PHASE_BONUS.get(start_type, 0)
+    if boot_bonus:
+        high_risk_count += boot_bonus
+        flags.append(f"BOOT_PHASE:{boot_phase}")
+
     return True, "has attack surface", high_risk_count, flags, signer, driver_class
 
 
-def prefilter_directory(drivers_dir, max_size=MAX_SIZE_BYTES, check_loldrivers=False, byovd_only=False):
+def prefilter_directory(drivers_dir, max_size=MAX_SIZE_BYTES, check_loldrivers=False, byovd_only=False, boot_log_data=None):
     """
     Pre-filter all .sys files in a directory.
     Returns list of drivers worth sending to Ghidra.
@@ -589,12 +671,17 @@ def prefilter_directory(drivers_dir, max_size=MAX_SIZE_BYTES, check_loldrivers=F
             wdac_hashes=wdac_hashes, wdac_filename_rules=wdac_filename_rules,
             holygrail_lol=holygrail_lol,
         )
+        # Boot phase info
+        start_type, boot_phase = get_driver_start_type(path)
+
         entry = {
             "name": name,
             "path": path,
             "size": os.path.getsize(path),
             "risk_hint": risk_hint,
             "flags": flags,
+            "boot_phase": boot_phase,
+            "start_type": start_type,
             "_should_analyze": should_analyze,
             "_reason": reason,
         }
@@ -647,6 +734,18 @@ def prefilter_directory(drivers_dir, max_size=MAX_SIZE_BYTES, check_loldrivers=F
             results["skip"].append(entry)
 
     elapsed = time.time() - start
+
+    # Boot log cross-reference (from boot_analyzer.py output)
+    if boot_log_data:
+        for entry in results["analyze"]:
+            driver_lower = entry["name"].lower()
+            if driver_lower in boot_log_data:
+                boot_entry = boot_log_data[driver_lower]
+                entry["risk_hint"] += BOOT_LOG_BLIND_SPOT_BONUS
+                entry["boot_blind_spot"] = True
+                entry["boot_log_hits"] = boot_entry.get("name_not_found_count", 0)
+                if not any(f.startswith("BOOT_BLIND_SPOT") for f in entry["flags"]):
+                    entry["flags"].append("BOOT_BLIND_SPOT")
 
     # Sort analyzable drivers by risk hint (highest first)
     results["analyze"].sort(key=lambda x: x["risk_hint"], reverse=True)
@@ -710,6 +809,25 @@ def prefilter_directory(drivers_dir, max_size=MAX_SIZE_BYTES, check_loldrivers=F
         for d in phys_mem:
             print(f"      {d['name']}")
 
+    # Boot blind spot drivers
+    blind_spot_drivers = [d for d in results["analyze"] if d.get("boot_blind_spot")]
+    if blind_spot_drivers:
+        print(f"\n  🔇 Boot blind spot drivers: {len(blind_spot_drivers)}")
+        for d in blind_spot_drivers:
+            print(f"      {d['name']} (boot hits: {d.get('boot_log_hits', 0)}, phase: {d.get('boot_phase', 'UNKNOWN')})")
+
+    # Boot phase breakdown
+    boot_phases = {}
+    for d in results["analyze"]:
+        bp = d.get("boot_phase", "UNKNOWN")
+        if bp in ("BOOT_START", "SYSTEM_START"):
+            boot_phases[bp] = boot_phases.get(bp, 0) + 1
+    if boot_phases:
+        print(f"\n  ⏱️  Early-boot drivers (EDR blind window):")
+        for phase in ("BOOT_START", "SYSTEM_START"):
+            if phase in boot_phases:
+                print(f"      {phase}: {boot_phases[phase]}")
+
     # Show driver class breakdown
     class_counts = {}
     for d in results["analyze"]:
@@ -742,17 +860,27 @@ def main():
                         help="Only show BYOVD process killer candidates")
     parser.add_argument("--refresh-lol", action="store_true",
                         help="Force refresh LOLDrivers cache")
+    parser.add_argument("--boot-log",
+                        help="Boot analyzer JSON report (from boot_analyzer.py) for cross-reference")
 
     args = parser.parse_args()
 
     if args.refresh_lol:
         load_loldrivers_hashes(force_refresh=True)
 
+    # Load boot log for cross-reference if provided
+    boot_log_data = {}
+    if args.boot_log:
+        boot_log_data = load_boot_log(args.boot_log)
+        if boot_log_data:
+            print(f"  Boot log loaded: {len(boot_log_data)} drivers")
+
     max_bytes = args.max_size * 1024 * 1024
     results = prefilter_directory(
         args.drivers_dir, max_bytes,
         check_loldrivers=args.loldrivers,
         byovd_only=args.byovd,
+        boot_log_data=boot_log_data,
     )
 
     if args.list:
