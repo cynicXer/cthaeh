@@ -127,12 +127,7 @@ def analyze(entries):
         start_type, start_name = get_driver_start_type_from_name(proc_name)
 
         times_sorted = sorted(data["times"])
-        is_blind_spot = (
-            # Boot/system start drivers hitting missing keys = classic blind spot
-            (start_type in (0, 1) and data["count"] >= 1)
-            # Any driver with high hit count is suspicious regardless of start type
-            or data["count"] >= HIGH_HIT_THRESHOLD
-        )
+        is_blind_spot = False  # Set after sorting, based on relative ranking
 
         results.append({
             "driver": proc_name,
@@ -148,6 +143,18 @@ def analyze(entries):
     # Sort: start_type ASC (earlier = more interesting), then hit count DESC
     # Unknown (-1) sorts last
     results.sort(key=lambda x: (x["start_type"] if x["start_type"] >= 0 else 999, -x["name_not_found_count"]))
+
+    # Flag blind spot candidates:
+    # - BOOT_START (0) or SYSTEM_START (1) with 10+ hits
+    # - Any driver in the top 10% by hit count
+    if results:
+        counts = sorted([r["name_not_found_count"] for r in results], reverse=True)
+        top_10_threshold = counts[max(0, len(counts) // 10)]
+        for r in results:
+            r["boot_blind_spot_candidate"] = (
+                (r["start_type"] in (0, 1) and r["name_not_found_count"] >= 10)
+                or r["name_not_found_count"] >= max(top_10_threshold, 20)
+            )
 
     return results
 
