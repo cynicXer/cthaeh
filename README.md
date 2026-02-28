@@ -11,8 +11,11 @@ Cthaeh doesn't find vulnerabilities. It finds the drivers most likely to *have* 
 ## Quick Start
 
 ```bash
-# Install pefile for pre-filtering
-pip install pefile
+# Install dependencies
+pip install -r requirements.txt
+
+# Download Talos data type archive (once, for better Ghidra type recovery)
+python download_dta.py
 
 # Extract third-party drivers from your machine
 python extract_driverstore.py --output C:\drivers\extracted
