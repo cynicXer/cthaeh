@@ -190,6 +190,104 @@ THRESHOLDS = {
 }
 
 
+# --- KernelSight Anti-Pattern Mapping (AP1-AP6) ---
+# Maps Cthaeh check IDs to known vulnerability anti-patterns from KernelSight research.
+# Reference: https://github.com/AkashicSeer/KernelSight
+ANTI_PATTERNS = {
+    # AP1: Trusting user-supplied lengths (~60% of CVEs)
+    "AP1": {
+        "name": "Trusting user-supplied lengths",
+        "example_cve": "CVE-2025-5942",
+        "checks": [
+            "no_inputbuffer_length_check",
+            "unchecked_copy",
+            "weak_copy_validation",
+        ],
+    },
+    # AP2: Missing synchronization on shared state (~14%)
+    "AP2": {
+        "name": "Missing synchronization on shared state",
+        "example_cve": "CVE-2026-21241",
+        "checks": [
+            "uaf_indicator",
+            "double_free_indicator",
+            "free_without_null",
+        ],
+    },
+    # AP3: Trusting on-disk/file-embedded offsets
+    "AP3": {
+        "name": "Trusting on-disk/file-embedded offsets",
+        "example_cve": "CVE-2025-29824",
+        "checks": [
+            "ondisk_offset_trust",
+        ],
+    },
+    # AP4: Exposing physical memory or arbitrary MSR access
+    "AP4": {
+        "name": "Exposing physical memory or arbitrary MSR access",
+        "example_cve": "CVE-2021-21551",
+        "checks": [
+            "maps_physical_memory",
+            "msr_write",
+            "msr_read",
+            "physical_memory_rw",
+            "physical_memory_section",
+        ],
+    },
+    # AP5: No IOCTL authentication / open device ACLs
+    "AP5": {
+        "name": "No IOCTL authentication / open device ACLs",
+        "example_cve": "CVE-2025-3464",
+        "checks": [
+            "insecure_device_creation",
+            "symlink_no_acl",
+            "no_auth_imports",
+            "no_access_checks",
+        ],
+    },
+    # AP6: Double-fetch / TOCTOU on user buffers
+    "AP6": {
+        "name": "Double-fetch / TOCTOU on user buffers",
+        "example_cve": "CVE-2024-11616",
+        "checks": [
+            "double_fetch_indicator",
+        ],
+    },
+}
+
+# Build reverse lookup: check_id -> list of AP codes
+_CHECK_TO_AP = {}
+for _ap_code, _ap_info in ANTI_PATTERNS.items():
+    for _check_id in _ap_info["checks"]:
+        if _check_id not in _CHECK_TO_AP:
+            _CHECK_TO_AP[_check_id] = []
+        _CHECK_TO_AP[_check_id].append(_ap_code)
+
+
+def compute_anti_patterns(findings):
+    """Compute triggered anti-patterns from findings list.
+
+    Returns a list of dicts: [{"ap": "AP1", "name": "...", "cve": "...", "triggered_by": [...]}]
+    """
+    triggered = {}
+    for f in findings:
+        check_id = f.get("check", "")
+        if f.get("score", 0) <= 0:
+            continue
+        ap_codes = _CHECK_TO_AP.get(check_id, [])
+        for ap in ap_codes:
+            if ap not in triggered:
+                triggered[ap] = {
+                    "ap": ap,
+                    "name": ANTI_PATTERNS[ap]["name"],
+                    "example_cve": ANTI_PATTERNS[ap]["example_cve"],
+                    "triggered_by": [],
+                }
+            triggered[ap]["triggered_by"].append(check_id)
+    # Sort by AP code for deterministic output
+    return sorted(triggered.values(), key=lambda x: x["ap"])
+
+
 def _load_scoring_yaml():
     """Load scoring rules from YAML config file.
 
@@ -2857,6 +2955,11 @@ def run():
     
     if matched_cves:
         result["cve_history"] = matched_cves
+
+    # Compute anti-pattern tags (#16)
+    ap_list = compute_anti_patterns(all_findings)
+    if ap_list:
+        result["anti_patterns"] = ap_list
 
     print("===TRIAGE_START===")
     print(json.dumps(result, indent=2))
