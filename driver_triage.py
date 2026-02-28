@@ -3068,6 +3068,125 @@ def get_driver_info(program):
     return info
 
 
+# --- Recommendation templates by priority tier ---
+RECOMMENDATIONS = {
+    "CRITICAL": "CRITICAL target. Verify device accessibility from standard user context. "
+                "Check IOCTL surface for input validation gaps.",
+    "HIGH": "HIGH priority target. Map IOCTL codes and test accessible ones for "
+            "missing bounds checks. Look for authentication bypass paths.",
+    "MEDIUM": "MEDIUM priority. Worth investigating IOCTL surface if accessible. "
+              "Check for compound primitives that elevate risk.",
+    "LOW": "LOW priority. Limited attack surface detected. Review if vendor "
+           "context or new capabilities change the picture.",
+    "SKIP": "Minimal attack surface detected. Likely safe to deprioritize.",
+}
+
+
+def write_report(result, driver_info, vendor_info, driver_class_info,
+                 matched_cves, all_findings, ap_list):
+    """Write enhanced human-readable triage report (#6).
+
+    Prints a formatted text report with vendor context, framework info,
+    CVE history, anti-pattern tags, score breakdown, and recommendation.
+    Output is printed to stdout alongside the JSON (captured by orchestrator).
+    """
+    driver_name = driver_info.get("name", "unknown")
+    version = driver_info.get("version_info", {}).get("FileVersion", "")
+    if version:
+        header = "%s v%s" % (driver_name, version)
+    else:
+        header = driver_name
+
+    score = result.get("score", 0)
+    priority = result.get("priority", "UNKNOWN")
+
+    # --- Vendor line ---
+    vendor_name = vendor_info.get("vendor_name", "Unknown") if vendor_info else "Unknown"
+    is_cna = vendor_info.get("is_cna", False) if vendor_info else False
+    bounty_url = vendor_info.get("bounty_url") if vendor_info else None
+    cna_str = "YES" if is_cna else "NO"
+    bounty_str = bounty_url if bounty_url else "None"
+
+    # --- Signer line ---
+    signer = driver_info.get("version_info", {}).get("CompanyName", "Unknown")
+
+    # --- Framework line ---
+    framework = "unknown"
+    for f in all_findings:
+        check = f.get("check", "")
+        if check == "wdf_device_interface":
+            framework = "wdf_kmdf"
+            break
+        elif check == "wdm_direct_device":
+            framework = "wdm_raw"
+            break
+    if framework == "unknown":
+        cat = driver_class_info.get("category", "").lower()
+        if "wdf" in cat or "kmdf" in cat:
+            framework = "wdf_kmdf"
+        elif "wdm" in cat or "raw" in cat:
+            framework = "wdm_raw"
+        elif "file system" in cat or "minifilter" in cat:
+            framework = "minifilter"
+        elif "ndis" in cat:
+            framework = "ndis"
+
+    drv_cls = driver_class_info.get("class", "UNKNOWN")
+
+    # --- Prior CVE line ---
+    cve_count = len(matched_cves)
+    if matched_cves:
+        cve_ids = [c.get("id", "?") for c in matched_cves[:5]]
+        cve_str = "%d (%s)" % (cve_count, ", ".join(cve_ids))
+    else:
+        cve_str = "0"
+
+    # --- Anti-pattern line ---
+    if ap_list:
+        ap_strs = ["%s (%s)" % (ap["ap"], ap["name"]) for ap in ap_list]
+        ap_line = ", ".join(ap_strs)
+    else:
+        ap_line = "None detected"
+
+    # --- Score breakdown ---
+    scored_findings = [f for f in all_findings if f.get("score", 0) != 0]
+    scored_findings.sort(key=lambda x: abs(x.get("score", 0)), reverse=True)
+
+    # --- Build report ---
+    sep = "=" * 55
+    lines = []
+    lines.append("")
+    lines.append(sep)
+    lines.append("Driver: %s" % header)
+    lines.append("Vendor: %s | CNA: %s | Bounty: %s" % (vendor_name, cna_str, bounty_str))
+    lines.append("Signer: %s" % signer)
+    lines.append("Framework: %s | Class: %s" % (framework, drv_cls))
+    lines.append("Prior CVEs: %s" % cve_str)
+    lines.append("Score: %d (%s)" % (score, priority))
+    lines.append("Anti-Patterns: %s" % ap_line)
+    lines.append(sep)
+    lines.append("Score Breakdown:")
+
+    for f in scored_findings[:20]:
+        sign = "+" if f["score"] > 0 else ""
+        lines.append("  %s%-4d %s" % (sign, f["score"], f["check"]))
+
+    if scored_findings:
+        lines.append("  " + "-" * 30)
+        lines.append("  Total: %d" % score)
+
+    lines.append("")
+    rec = RECOMMENDATIONS.get(priority, RECOMMENDATIONS["SKIP"])
+    lines.append("Recommendation: %s" % rec)
+    lines.append(sep)
+    lines.append("")
+
+    report_text = "\n".join(lines)
+    print(report_text)
+
+    return report_text
+
+
 def run():
     """Main triage function - the Cthaeh sees all."""
     program = currentProgram
@@ -3231,6 +3350,10 @@ def run():
     ap_list = compute_anti_patterns(all_findings)
     if ap_list:
         result["anti_patterns"] = ap_list
+
+    # Enhanced text report (#6)
+    write_report(result, driver_info, vendor_info, driver_class_info,
+                 matched_cves, all_findings, ap_list)
 
     print("===TRIAGE_START===")
     print(json.dumps(result, indent=2))
