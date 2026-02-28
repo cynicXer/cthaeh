@@ -2902,11 +2902,13 @@ def check_ondisk_offset_trust(program, imports, driver_class_info):
         "file system", "minifilter", "filter",
     ])
 
-    # Also check import-based detection
+    # Also check import-based detection for FS/minifilter drivers
     has_flt = "fltregisterfilter" in imports
     has_fs_imports = any(f in imports for f in [
         "fltregisterfilter", "fsrtlregisterfilesystemfiltercallbacks",
-        "ioregisterfilesystem",
+        "ioregisterfilesystem", "fsrtlnotifyfullchangedirectory",
+        "ccinitiallycachestream", "fsrtlenterfilesystem",
+        "fsrtlisntstatusexpected",
     ])
 
     if not is_fs_driver and not has_flt and not has_fs_imports:
@@ -2951,10 +2953,12 @@ def check_ondisk_offset_trust(program, imports, driver_class_info):
             has_offset_use = False
             has_bounds_check = False
 
-            # Offset/index usage indicators
+            # Offset/index usage indicators (FS-specific + general)
             offset_indicators = [
                 "offset", "index", "length", "size", "count",
                 "numbytes", "byteoffset", "fileoffset",
+                "sectoroffset", "clusteroffset", "blocksize",
+                "allocationsize", "endoffile", "startingvbo",
             ]
             for indicator in offset_indicators:
                 if indicator in text_lower:
