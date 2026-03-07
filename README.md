@@ -2,7 +2,7 @@
 
 *"It sees all the ways the future can branch and blossom from a single moment."*
 
-Ghidra-powered triage scanner for Windows kernel drivers. Scores drivers on 60+ vulnerability heuristics: dangerous primitives, IOCTL attack surface, missing validation, BYOVD patterns, and more. So you know which `.sys` files to pull apart first.
+Ghidra-powered triage scanner for Windows kernel drivers. Scores drivers on 97 vulnerability heuristics: dangerous primitives, IOCTL attack surface, missing validation, BYOVD patterns, and more. So you know which `.sys` files to pull apart first.
 
 Named after the all-seeing tree from *The Kingkiller Chronicle*.
 
@@ -21,12 +21,16 @@ python download_dta.py
 python extract_driverstore.py --output C:\drivers\extracted
 
 # Run triage (smart defaults: auto-detect Ghidra, parallel workers, prefilter on)
+# On Windows, only currently loaded drivers are scanned by default (--running-only)
 python run_triage.py C:\drivers\extracted
+
+# Scan ALL extracted drivers, not just running ones
+python run_triage.py C:\drivers\extracted --all
 
 # Or point at your Ghidra install explicitly
 python run_triage.py C:\drivers\extracted --ghidra C:\ghidra_11.3
 
-# Single driver
+# Single driver (--running-only is skipped in single mode)
 python run_triage.py --single C:\path\to\suspicious.sys
 
 # Explain a specific driver's score (no rescan needed)
@@ -37,10 +41,11 @@ python run_triage.py --explain example.sys
 
 ## What It Does
 
-1. **Pre-filter** (pefile): eliminates uninteresting drivers in milliseconds (~37% dropped)
-2. **Parallel Ghidra headless**: analyzes remaining drivers with N workers (auto = half your CPUs)
-3. **60+ heuristic checks**: scores each driver on vulnerability indicators
-4. **Ranked output**: CSV, JSON, and markdown report with full scoring breakdowns
+1. **Running-only filter** (Windows default): scans only currently loaded drivers via `driverquery`, skipping dormant DriverStore files. Use `--all` to override.
+2. **Pre-filter** (pefile): eliminates uninteresting drivers in milliseconds (~37% dropped)
+3. **Parallel Ghidra headless**: analyzes remaining drivers with N workers (auto = half your CPUs)
+4. **97 heuristic checks**: scores each driver on vulnerability indicators
+5. **Ranked output**: CSV, JSON, and markdown report with enriched scoring breakdowns (vendor/CNA status, prior CVEs, priority recommendations)
 
 ## Scoring
 
@@ -145,16 +150,28 @@ python run_triage.py --explain example.sys
 
 ```
 ============================================================
-  EXPLAIN: example.sys
+  Driver: example.sys v1.0.2.5 (Example Corp.)
 ============================================================
+  Vendor: Example Corp. (CNA: YES | Bounty: PRESENT)
+  Prior CVEs: 3 (CVE-2024-1234, CVE-2023-5678, CVE-2022-9012)
   Score: 285 | Priority: CRITICAL
-  Vendor: Example Corp.
+  Size: 148,224 bytes | Functions: 47
+  Driver Class: NETWORK (WiFi)
+  Hardware: PRESENT (Intel Wi-Fi 6 AX201)
+  Device Access: Users (\\.\ExampleDev)
+  Priority: CRITICAL - IMMEDIATE - full reverse engineering, build PoC exploit
 
   Scored checks:
-    +  25  [msr_write] Contains WRMSR instruction(s)
-    +  20  [symlink_no_acl] Symbolic link + IoCreateDevice without IoCreateDeviceSecure
-    +  20  [port_io_rw] Port I/O: 12 IN + 8 OUT instructions
-    +  15  [wifi_driver] WiFi driver - massive IOCTL/WDI attack surface
+    + 25  [msr_write] Contains WRMSR instruction(s)
+    + 20  [symlink_no_acl] Symbolic link + IoCreateDevice without IoCreateDeviceSecure
+    + 20  [port_io_rw] Port I/O: 12 IN + 8 OUT instructions
+    + 15  [wifi_driver] WiFi driver - massive IOCTL/WDI attack surface
+    ...
+
+    Positive: +285 | Negative: 0 | Net: 285
+
+  Informational (4 checks, 0 pts each):
+    [0]  [wdac_not_blocked] Not on WDAC block list
     ...
 ```
 
@@ -164,13 +181,17 @@ The top scorer is auto-explained after every scan.
 
 | File | Purpose |
 |------|---------|
-| `driver_triage.py` | Ghidra headless script (60+ checks, configurable weights) |
-| `run_triage.py` | Orchestrator (parallel, prefilter, explain, smart defaults) |
+| `driver_triage.py` | Ghidra headless script (97 checks, configurable weights) |
+| `run_triage.py` | Orchestrator (parallel, prefilter, running-only filter, explain, smart defaults) |
 | `prefilter.py` | Fast PE import pre-filter |
 | `extract_driverstore.py` | Extracts third-party .sys from Windows DriverStore |
 | `scoring_rules.yaml` | All scoring weights and thresholds in one place |
 | `apply_dta.py` | Ghidra pre-script: loads Talos DTA for kernel types |
 | `download_dta.py` | Downloads the Talos .gdt file to `data/` |
+| `hw_check.py` | Post-triage hardware presence check via PnP device enumeration |
+| `device_check.py` | Post-triage device object DACL check for access levels |
+| `cna_vendors.json` | CNA status, bounty URLs, and driver patterns per vendor |
+| `driver_cves.json` | Prior CVE history mapped to driver families |
 | `investigated.json` | Drivers already analyzed (skipped on scan) |
 | `policies/` | WDAC block policy JSONs and HolyGrail LOLDrivers data |
 | `test_regression.py` | Regression tests against known ground-truth samples |
@@ -178,13 +199,31 @@ The top scorer is auto-explained after every scan.
 ## CLI Reference
 
 ```
-python run_triage.py C:\drivers                    # Scan with smart defaults
+python run_triage.py C:\drivers                    # Scan with smart defaults (running-only on Windows)
+python run_triage.py C:\drivers --all              # Scan ALL drivers, not just running ones
 python run_triage.py C:\drivers --no-prefilter     # Skip pre-filter
-python run_triage.py --single C:\path\to\driver.sys
-python run_triage.py --explain example.sys        # Explain existing results
+python run_triage.py --single C:\path\to\driver.sys  # Single driver (running-only skipped)
+python run_triage.py --explain example.sys         # Explain existing results
 python run_triage.py C:\drivers --workers 8        # Override worker count
 python run_triage.py C:\drivers --no-json --no-report  # CSV only
+python run_triage.py C:\drivers --hw-check         # Check hardware presence post-triage
+python run_triage.py C:\drivers --device-check     # Check device DACLs post-triage
+python run_triage.py C:\drivers --device-check --device-check-min-score 50  # Lower threshold
+python run_triage.py C:\drivers --research         # Research mode (hw_absent is informational)
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--running-only` | ON | Only scan currently loaded drivers (Windows, uses `driverquery`) |
+| `--all` | OFF | Scan all drivers, overrides `--running-only` |
+| `--hw-check` | OFF | Post-triage hardware presence check (Windows only) |
+| `--device-check` | OFF | Post-triage device object DACL check (Windows only) |
+| `--device-check-min-score` | 75 | Minimum score for device check |
+| `--research` | OFF | Research mode: hardware_absent is informational only |
+| `--workers N` | auto | Parallel Ghidra instances (default: half CPUs) |
+| `--no-prefilter` | OFF | Disable pefile pre-filter |
+| `--no-json` | OFF | Disable JSON output |
+| `--no-report` | OFF | Disable markdown report |
 
 **Environment variables:**
 - `GHIDRA_HOME` - Path to Ghidra installation (auto-detected if not set)
@@ -202,9 +241,11 @@ python run_triage.py C:\drivers --no-json --no-report  # CSV only
 ## The Workflow
 
 ```
-DriverStore --> extract --> Cthaeh triage --> ranked list --> manual audit
-                                                                  |
-                                             Claude Code + Ghidra MCP --> vuln
+DriverStore --> extract --> running-only filter --> pre-filter --> Cthaeh triage --> ranked list --> manual audit
+                            (loaded drivers)     (pefile)        (Ghidra + 97       |
+                            [Windows default]                     heuristics)        |
+                                                                                    |
+                                                           Claude Code + Ghidra MCP --> vuln
 ```
 
 ## Requirements
