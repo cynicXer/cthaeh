@@ -20,11 +20,10 @@ python download_dta.py
 # Extract third-party drivers from your machine
 python extract_driverstore.py --output C:\drivers\extracted
 
-# Run triage (smart defaults: auto-detect Ghidra, parallel workers, prefilter on)
-# On Windows, only currently loaded drivers are scanned by default (--running-only)
+# Run triage (smart defaults — on Windows, only loaded drivers are scanned)
 python run_triage.py C:\drivers\extracted
 
-# Scan ALL extracted drivers, not just running ones
+# Scan all drivers, not just running ones
 python run_triage.py C:\drivers\extracted --all
 
 # Or point at your Ghidra install explicitly
@@ -41,11 +40,11 @@ python run_triage.py --explain example.sys
 
 ## What It Does
 
-1. **Running-only filter** (Windows default): scans only currently loaded drivers via `driverquery`, skipping dormant DriverStore files. Use `--all` to override.
+1. **Running-only filter** (Windows default): only loaded drivers via `driverquery`. `--all` to override.
 2. **Pre-filter** (pefile): eliminates uninteresting drivers in milliseconds (~37% dropped)
 3. **Parallel Ghidra headless**: analyzes remaining drivers with N workers (auto = half your CPUs)
 4. **97 heuristic checks**: scores each driver on vulnerability indicators
-5. **Ranked output**: CSV, JSON, and markdown report with enriched scoring breakdowns (vendor/CNA status, prior CVEs, priority recommendations)
+5. **Ranked output**: CSV, JSON, and markdown report with vendor/CNA status, prior CVEs, and priority recommendations
 
 ## Scoring
 
@@ -241,11 +240,9 @@ python run_triage.py C:\drivers --research         # Research mode (hw_absent is
 ## The Workflow
 
 ```
-DriverStore --> extract --> running-only filter --> pre-filter --> Cthaeh triage --> ranked list --> manual audit
-                            (loaded drivers)     (pefile)        (Ghidra + 97       |
-                            [Windows default]                     heuristics)        |
-                                                                                    |
-                                                           Claude Code + Ghidra MCP --> vuln
+DriverStore --> extract --> running-only --> pre-filter --> Cthaeh triage --> ranked list --> manual audit
+                           [Win default]    (pefile)       (97 checks)                         |
+                                                                          Claude Code + Ghidra MCP --> vuln
 ```
 
 ## Requirements
