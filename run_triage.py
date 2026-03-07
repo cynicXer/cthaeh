@@ -343,8 +343,11 @@ def write_csv(results, output_path):
     print(f"\nResults written to: {output_path}")
 
 
-def print_summary(results):
+def print_summary(results, min_tier="HIGH"):
     """Print a quick summary to terminal."""
+    tier_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "SKIP"]
+    min_tier_idx = tier_order.index(min_tier) if min_tier in tier_order else 1
+
     total = len(results)
     critical = sum(1 for r in results if r.get("priority") == "CRITICAL")
     high = sum(1 for r in results if r.get("priority") == "HIGH")
@@ -363,13 +366,21 @@ def print_summary(results):
     print()
     
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
-    if results:
-        print("Top targets:")
-        for i, r in enumerate(results[:20], 1):
+    # Filter to min_tier and above
+    filtered = [r for r in results
+                if r.get("priority", "SKIP") in tier_order[:min_tier_idx + 1]]
+    if filtered:
+        tier_label = f" (>= {min_tier})" if min_tier != "SKIP" else ""
+        print(f"Top targets{tier_label}:")
+        print(f"  Score = heuristic analysis findings | Class = driver type risk")
+        print()
+        for i, r in enumerate(filtered[:20], 1):
             driver = r.get("driver", {})
             dc = r.get("driver_class", {})
-            cls_tag = f" [{dc['class']}]" if dc and dc.get("class", "UNKNOWN") != "UNKNOWN" else ""
-            print(f"  {i:2d}. [{r.get('priority', '?'):6s}] {r.get('score', 0):3d} pts  {driver.get('name', '?')}{cls_tag}")
+            cls_tag = f" (class: {dc['class']})" if dc and dc.get("class", "UNKNOWN") != "UNKNOWN" else ""
+            print(f"  {i:2d}. [{r.get('priority', '?'):8s}] {r.get('score', 0):3d} pts  {driver.get('name', '?')}{cls_tag}")
+    elif results:
+        print(f"No drivers at {min_tier} tier or above. Use --min-tier MEDIUM to see more.")
 
 
 def run_analysis(drivers, ghidra_path, script_path, project_dir, workers=1, json_output=None):
@@ -742,10 +753,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="🌳 Cthaeh - Driver vulnerability triage scanner",
         epilog="""Examples:
-  python run_triage.py C:\\drivers                    # Scan with smart defaults
-  python run_triage.py C:\\drivers --no-prefilter     # Skip pre-filter
+  python run_triage.py C:\\drivers                    # Scan with smart defaults (shows HIGH+ only)
+  python run_triage.py C:\\drivers --min-tier CRITICAL # Only show CRITICAL in top targets
+  python run_triage.py C:\\drivers --min-tier MEDIUM   # Include MEDIUM and above
+  python run_triage.py C:\\drivers --no-prefilter      # Skip pre-filter
   python run_triage.py --single C:\\path\\to\\driver.sys
-  python run_triage.py --explain amdfendr.sys        # Explain existing results
+  python run_triage.py --explain amdfendr.sys         # Explain existing results
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -771,6 +784,9 @@ def main():
     parser.add_argument("--report", help="Markdown report path (default: triage_report.md)")
     parser.add_argument("--report-top", type=int, default=20,
                         help="Number of top drivers to include in report (default: 20)")
+    parser.add_argument("--min-tier", default="HIGH",
+                        choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "SKIP"],
+                        help="Minimum tier to show in Top targets display (default: HIGH). Counts/report/JSON still include all.")
     parser.add_argument("--explain", help="Show detailed scoring breakdown for a specific driver (by name)")
     parser.add_argument("--hw-check", action="store_true",
                         help="Check hardware presence after triage (Windows only)")
@@ -927,7 +943,7 @@ def main():
 
         if report_output:
             write_report(results, report_output, args.report_top)
-        print_summary(results)
+        print_summary(results, min_tier=args.min_tier)
 
     if results:
         if args.explain:
