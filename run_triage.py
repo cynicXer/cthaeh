@@ -314,13 +314,26 @@ def run_ghidra_analysis(args_tuple):
         return None, str(e)
 
 
-def run_prefilter(drivers_dir, max_size_mb=5):
-    """Run the pefile pre-filter to eliminate uninteresting drivers."""
+def run_prefilter(drivers_dir, max_size_mb=5, min_risk_hint=0):
+    """Run the pefile pre-filter to eliminate uninteresting drivers.
+    
+    Args:
+        min_risk_hint: Minimum prefilter risk_hint score to send to Ghidra.
+            0 = send everything with attack surface (default, backward compat).
+            1+ = skip low-potential drivers before Ghidra (saves time).
+    """
     try:
         from prefilter import prefilter_directory
         max_bytes = max_size_mb * 1024 * 1024
         results = prefilter_directory(drivers_dir, max_bytes, check_loldrivers=True)
-        return [d["path"] for d in results["analyze"]]
+        analyze = results["analyze"]
+        if min_risk_hint > 0:
+            before = len(analyze)
+            analyze = [d for d in analyze if d.get("risk_hint", 0) >= min_risk_hint]
+            skipped = before - len(analyze)
+            if skipped:
+                print(f"  Pre-filter: {skipped} drivers below risk_hint {min_risk_hint} (skipped before Ghidra)")
+        return [d["path"] for d in analyze]
     except ImportError:
         print("WARNING: prefilter.py not found or pefile not installed.")
         print("  Install: pip install pefile")
@@ -779,10 +792,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="🌳 Cthaeh - Driver vulnerability triage scanner",
         epilog="""Examples:
-  python run_triage.py C:\\drivers                    # Scan with smart defaults (shows HIGH+ only)
-  python run_triage.py C:\\drivers --min-tier CRITICAL # Only show CRITICAL in top targets
-  python run_triage.py C:\\drivers --min-tier MEDIUM   # Include MEDIUM and above
-  python run_triage.py C:\\drivers --no-prefilter      # Skip pre-filter
+  python run_triage.py C:\\drivers                      # Scan with smart defaults (shows HIGH+ only)
+  python run_triage.py C:\\drivers --prefilter-min 3    # Aggressive filter (fewer drivers to Ghidra)
+  python run_triage.py C:\\drivers --prefilter-min 0    # Analyze everything with attack surface
+  python run_triage.py C:\\drivers --min-tier CRITICAL  # Only show CRITICAL in top targets
+  python run_triage.py C:\\drivers --no-prefilter       # Skip pre-filter entirely
   python run_triage.py --single C:\\path\\to\\driver.sys
   python run_triage.py --explain amdfendr.sys         # Explain existing results
 """,
@@ -800,6 +814,9 @@ def main():
                         help="Parallel Ghidra instances (default: auto = half CPUs)")
     parser.add_argument("--no-prefilter", action="store_true",
                         help="Disable pefile pre-filter (on by default)")
+    parser.add_argument("--prefilter-min", type=int, default=1,
+                        help="Minimum prefilter risk_hint to send to Ghidra (default: 1). "
+                             "Higher = fewer drivers analyzed = faster scan. 0 = analyze everything with attack surface.")
     parser.add_argument("--max-size", type=int, default=5,
                         help="Max driver size in MB for pre-filter (default: 5)")
     parser.add_argument("--no-json", action="store_true",
@@ -892,7 +909,7 @@ def main():
     else:
         if use_prefilter:
             print(f"Running pre-filter on {drivers_dir}...")
-            filtered = run_prefilter(drivers_dir, args.max_size)
+            filtered = run_prefilter(drivers_dir, args.max_size, min_risk_hint=args.prefilter_min)
             if filtered is not None:
                 drivers = filtered
             else:
