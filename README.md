@@ -89,8 +89,6 @@ DriverStore --> extract --> running-only --> pre-filter --> Cthaeh --> ranked li
 - Ghidra 10.x+ (headless mode)
 - Windows for DriverStore extraction (analysis works on any OS)
 
-See [REFERENCE.md](REFERENCE.md) for full flag list, check categories, anti-pattern tags, and file descriptions.
-
 ## Acknowledgments
 
 - [HolyGrail](https://github.com/BlackSnufkin/Holygrail) (BlackSnufkin) — WDAC + LOLDrivers
